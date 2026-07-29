@@ -10,7 +10,7 @@ from typing import Any
 from curl_cffi import requests as cffi_requests
 
 # ---------------------------------------------------------------------------
-# Constants & Rules (Zasady z poprzedniego bota LEGO)
+# Constants & Rules
 # ---------------------------------------------------------------------------
 
 DEFAULT_VINTED_URL = (
@@ -19,8 +19,7 @@ DEFAULT_VINTED_URL = (
 )
 VINTED_HOME_URL = "https://www.vinted.pl/"
 
-# Konfiguracja Bright Data Super Proxy z rotacją na Polskę (-country-pl)
-# Hasło pobierane jest całkowicie bezpiecznie ze zmiennej środowiskowej Render.
+# Używamy zweryfikowanego portu 44445 oraz zmiennej środowiskowej na hasło
 BRIGHT_DATA_CUSTOMER = "h1_83f90df2"
 BRIGHT_DATA_ZONE = "proxy_ligo"
 
@@ -28,7 +27,7 @@ def get_proxy_url() -> str:
     password = os.environ.get("BRIGHT_DATA_PASSWORD", "").strip()
     return (
         f"http://brd-customer-{BRIGHT_DATA_CUSTOMER}-zone-{BRIGHT_DATA_ZONE}-country-pl:"
-        f"{password}@brd.superproxy.io:4445"
+        f"{password}@brd.superproxy.io:44445"
     )
 
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
@@ -125,7 +124,6 @@ def run_server():
     print("Serwer HTTP wystartowal na porcie 10000")
     httpd.serve_forever()
 
-# Uruchomienie serwera w tle
 server_thread = threading.Thread(target=run_server)
 server_thread.daemon = True
 server_thread.start()
@@ -170,7 +168,7 @@ class LegoDealMonitor:
         self._init_session()
 
     def _init_session(self) -> None:
-        print("Inicjalizacja sesji Vinted przez Bright Data (Super Proxy PL)...")
+        print("Inicjalizacja sesji Vinted przez Bright Data (Port 44445)...")
         proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
         
         session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
@@ -181,13 +179,13 @@ class LegoDealMonitor:
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
                 },
-                timeout=15,
+                timeout=25,
             )
         except Exception as exc:
             raise RuntimeError(f"Błąd sieci przy inicjalizacji proxy: {exc}") from exc
 
         if resp.status_code == 403:
-            raise RuntimeError("Cloudflare zablokowało polskie proxy Bright Data (403). Sprawdź hasło w Renderze.")
+            raise RuntimeError("Cloudflare zablokowało zapytanie (403).")
 
         if resp.status_code == 200:
             cookies = dict(session.cookies)
@@ -210,7 +208,7 @@ class LegoDealMonitor:
         }
 
     def _refresh_session(self) -> None:
-        print("Odświeżanie sesji Vinted (automatyczna rotacja IP)...")
+        print("Odświeżanie sesji Vinted...")
         self._init_session()
 
     def send_telegram(self, text: str) -> None:
@@ -242,7 +240,7 @@ class LegoDealMonitor:
                 resp = self._session.get(
                     self.config.vinted_url,
                     headers=self._api_headers(),
-                    timeout=15,
+                    timeout=20,
                 )
             except Exception as exc:
                 raise RuntimeError(f"Network error: {exc}") from exc
@@ -255,7 +253,7 @@ class LegoDealMonitor:
                 return [i for i in items if isinstance(i, dict)]
 
             if resp.status_code in (401, 403) and attempt == 0:
-                print(f"HTTP {resp.status_code} — odświeżam sesję i rotuję IP.")
+                print(f"HTTP {resp.status_code} — odświeżam sesję.")
                 self._refresh_session()
                 continue
 
@@ -323,7 +321,7 @@ class LegoDealMonitor:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Monitoruję oferty z uwzględnieniem fraz i ceny do 120 zł (Bright Data PL)."
+                "Monitoruję oferty (Bright Data PL - port 44445)."
             )
             print(f"Bot zainicjowany — załadowano {len(self.seen_ids)} ofert.")
             return
