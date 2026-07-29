@@ -19,19 +19,17 @@ DEFAULT_VINTED_URL = (
 )
 VINTED_HOME_URL = "https://www.vinted.pl/"
 
-PROXY_LIST_MANUAL = [
-    "http://vijaejttdatacenter:prbp7ffm3lyq@104.238.9.226:6679",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@104.143.224.21:5882",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@146.103.3.42:7095",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@172.120.102.93:6253",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@64.137.58.212:6458",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@107.181.132.12:5990",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@142.147.131.38:5938",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@84.33.241.111:6468",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@185.135.10.107:5621",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@140.99.199.100:6478",
-    "http://vijaejttdatacenter:prbp7ffm3lyq@82.29.226.56:7398",
-]
+# Konfiguracja Bright Data Super Proxy z rotacją na Polskę (-country-pl)
+# Hasło pobierane jest całkowicie bezpiecznie ze zmiennej środowiskowej Render.
+BRIGHT_DATA_CUSTOMER = "h1_83f90df2"
+BRIGHT_DATA_ZONE = "proxy_ligo"
+
+def get_proxy_url() -> str:
+    password = os.environ.get("BRIGHT_DATA_PASSWORD", "").strip()
+    return (
+        f"http://brd-customer-{BRIGHT_DATA_CUSTOMER}-zone-{BRIGHT_DATA_ZONE}-country-pl:"
+        f"{password}@brd.superproxy.io:4445"
+    )
 
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("pudełko", "knights"),
@@ -140,19 +138,16 @@ class Config:
     vinted_url: str = DEFAULT_VINTED_URL
     max_price_pln: float = 120.0
     interval_seconds: int = 120
-    proxy_urls: list[str] = None
+    proxy_url: str = ""
 
     @classmethod
     def from_environment(cls) -> Config:
-        # Wpisz tutaj swoje dane lub pobieraj ze zmiennych środowiskowych Render
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "TUTAJ_WPISZ_SWOJ_TOKEN").strip()
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "TUTAJ_WPISZ_SWOJE_CHAT_ID").strip()
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-        env_proxy = os.environ.get("PROXY_URL", "").strip()
-        if env_proxy:
-            proxies = [p.strip() for p in env_proxy.split(",") if p.strip()]
-        else:
-            proxies = PROXY_LIST_MANUAL
+        proxy = os.environ.get("PROXY_URL", "").strip()
+        if not proxy:
+            proxy = get_proxy_url()
 
         return cls(
             telegram_bot_token=token,
@@ -160,7 +155,7 @@ class Config:
             vinted_url=os.environ.get("VINTED_URL", DEFAULT_VINTED_URL),
             max_price_pln=float(os.environ.get("MAX_CENA_PLN", "120")),
             interval_seconds=int(os.environ.get("CHECK_INTERVAL_SECONDS", "120")),
-            proxy_urls=proxies,
+            proxy_url=proxy,
         )
 
 
@@ -172,53 +167,38 @@ class LegoDealMonitor:
         self.last_vinted_error: str | None = None
         self._session: cffi_requests.Session | None = None
         self._bearer_token: str = ""
-        self._proxy_index = 0
         self._init_session()
 
-    def _get_next_proxy(self) -> str:
-        if not self.config.proxy_urls:
-            return ""
-        proxy = self.config.proxy_urls[self._proxy_index]
-        self._proxy_index = (self._proxy_index + 1) % len(self.config.proxy_urls)
-        return proxy
-
     def _init_session(self) -> None:
-        print("Inicjalizacja sesji Vinted (impersonacja Chrome)...")
-        attempts = len(self.config.proxy_urls) if self.config.proxy_urls else 1
+        print("Inicjalizacja sesji Vinted przez Bright Data (Super Proxy PL)...")
+        proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
+        
+        session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
+        try:
+            resp = session.get(
+                VINTED_HOME_URL,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+                },
+                timeout=15,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Błąd sieci przy inicjalizacji proxy: {exc}") from exc
 
-        for _ in range(max(attempts, 1)):
-            current_proxy = self._get_next_proxy()
-            proxies = {"http": current_proxy, "https": current_proxy} if current_proxy else None
-            
-            session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
-            try:
-                resp = session.get(
-                    VINTED_HOME_URL,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-                    },
-                    timeout=15,
-                )
-            except Exception as exc:
-                print(f"Błąd sieci dla proxy: {exc}. Przełączam...")
-                continue
+        if resp.status_code == 403:
+            raise RuntimeError("Cloudflare zablokowało polskie proxy Bright Data (403). Sprawdź hasło w Renderze.")
 
-            if resp.status_code == 403:
-                print("Cloudflare zablokowało IP (403). Zmieniam proxy...")
-                continue
+        if resp.status_code == 200:
+            cookies = dict(session.cookies)
+            token = cookies.get("access_token_web", "")
+            if token:
+                self._session = session
+                self._bearer_token = token
+                print(f"Sesja gotowa — pobrano token ({len(token)} znaków).")
+                return
 
-            if resp.status_code == 200:
-                cookies = dict(session.cookies)
-                token = cookies.get("access_token_web", "")
-                if token:
-                    self._session = session
-                    self._bearer_token = token
-                    print(f"Sesja gotowa — pobrano token ({len(token)} znaków).")
-                    return
-            time.sleep(1)
-
-        raise RuntimeError("Wszystkie adresy proxy zostały zablokowane lub nie działały.")
+        raise RuntimeError(f"Nie udało się zainicjalizować sesji Vinted. Status: {resp.status_code}")
 
     def _api_headers(self) -> dict[str, str]:
         return {
@@ -230,7 +210,7 @@ class LegoDealMonitor:
         }
 
     def _refresh_session(self) -> None:
-        print("Odświeżanie sesji Vinted (rotacja IP)...")
+        print("Odświeżanie sesji Vinted (automatyczna rotacja IP)...")
         self._init_session()
 
     def send_telegram(self, text: str) -> None:
@@ -275,7 +255,7 @@ class LegoDealMonitor:
                 return [i for i in items if isinstance(i, dict)]
 
             if resp.status_code in (401, 403) and attempt == 0:
-                print(f"HTTP {resp.status_code} — zmiana IP i ponowna próba.")
+                print(f"HTTP {resp.status_code} — odświeżam sesję i rotuję IP.")
                 self._refresh_session()
                 continue
 
@@ -343,7 +323,7 @@ class LegoDealMonitor:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Monitoruję oferty z uwzględnieniem fraz i ceny do 120 zł."
+                "Monitoruję oferty z uwzględnieniem fraz i ceny do 120 zł (Bright Data PL)."
             )
             print(f"Bot zainicjowany — załadowano {len(self.seen_ids)} ofert.")
             return
