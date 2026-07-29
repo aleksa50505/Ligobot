@@ -148,10 +148,17 @@ class Config:
         if not proxy:
             proxy = get_proxy_url()
 
+        # Zabezpieczenie: jeśli w zmiennych na Renderze została stara ścieżka z Nike, wymusza LEGO
+        env_url = os.environ.get("VINTED_URL", "").strip()
+        if not env_url or "nike" in env_url:
+            vinted_url = DEFAULT_VINTED_URL
+        else:
+            vinted_url = env_url
+
         return cls(
             telegram_bot_token=token,
             telegram_chat_id=chat_id,
-            vinted_url=os.environ.get("VINTED_URL", DEFAULT_VINTED_URL),
+            vinted_url=vinted_url,
             max_price_pln=float(os.environ.get("MAX_CENA_PLN", "120")),
             interval_seconds=int(os.environ.get("CHECK_INTERVAL_SECONDS", "120")),
             proxy_url=proxy,
@@ -322,7 +329,7 @@ class LegoDealMonitor:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Monitoruję oferty (Bright Data PL - port 44445)."
+                f"Monitoruję oferty: {self.config.vinted_url}"
             )
             print(f"Bot zainicjowany — załadowano {len(self.seen_ids)} ofert.")
             return
