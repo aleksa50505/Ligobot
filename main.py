@@ -10,7 +10,7 @@ TELEGRAM_BOT_TOKEN = "8616098944:AAF18VtLKoU4Tc9mceOISyOYsMb8FuAkhfM"
 TELEGRAM_CHAT_ID = "8652334073"
 
 # Link do wyszukiwania na Vinted
-VINTED_SEARCH_URL = "https://www.vinted.pl/catalog?search_text=nike"
+VINTED_SEARCH_URL = "https://www.vinted.pl/catalog?search_text=lego"
 
 def send_telegram_message(message):
     try:
