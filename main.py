@@ -1,18 +1,16 @@
 import os
 import time
-import asyncio
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-from playwright.async_api import async_playwright
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
+from bs4 import BeautifulSoup
 
-# Konfiguracja Telegrama (wstaw swoje dane)
+# Konfiguracja Telegrama
 TELEGRAM_BOT_TOKEN = "8616098944:AAF18VtLKoU4Tc9mceOISyOYsMb8FuAkhfM"
 TELEGRAM_CHAT_ID = "8652334073"
 
-
-# Link do wyszukiwania na Vinted (skopiuj swój przefiltrowany link z przeglądarki)
-VINTED_SEARCH_URL = "https://www.vinted.pl/catalog?search_text=lego"
+# Link do wyszukiwania na Vinted
+VINTED_SEARCH_URL = "https://www.vinted.pl/catalog?search_text=nike"
 
 def send_telegram_message(message):
     try:
@@ -45,39 +43,36 @@ server_thread = threading.Thread(target=run_server)
 server_thread.daemon = True
 server_thread.start()
 
-# Główna pętla bota Vinted z Playwright
-async def vinted_bot_loop():
-    print("Uruchamianie bota Vinted z Playwright...")
-    send_telegram_message("🤖 *Ligobot Vinted* wystartował i monitoruje oferty!")
+# Główna pętla bota
+def vinted_bot_loop():
+    print("Uruchamianie bota Vinted...")
+    send_telegram_message("🤖 *Ligobot Vinted* wystartował!")
     
     seen_items = set()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
-    async with async_playwright() as p:
-        # Uruchomienie przeglądarki w tle (headless)
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
-
-        while True:
-            try:
-                print(f"Sprawdzam Vinted: {VINTED_SEARCH_URL}")
-                await page.goto(VINTED_SEARCH_URL, timeout=60000)
-                await page.wait_for_timeout(5000)  # Czekaj na załadowanie elementów
-
-                # Pobieranie linków do ofert z widoku katalogu Vinted
-                items = await page.eval_on_selector_all(
-                    'a[href*="/items/"]',
-                    '(elements) => elements.map(e => e.href)'
-                )
+    while True:
+        try:
+            print(f"Sprawdzam Vinted: {VINTED_SEARCH_URL}")
+            response = requests.get(VINTED_SEARCH_URL, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                links = soup.find_all('a', href=True)
                 
-                # Usuwamy duplikaty i puste wartości
-                unique_items = list(set([item.split('?')[0] for item in items if item]))
+                unique_items = set()
+                for l in links:
+                    href = l['href']
+                    if "/items/" in href:
+                        if not href.startswith("http"):
+                            href = "https://www.vinted.pl" + href
+                        clean_link = href.split('?')[0]
+                        unique_items.add(clean_link)
                 
-                print Znaleziono ofert: {len(unique_items)}
+                print(f"Znaleziono ofert: {len(unique_items)}")
                 
-                # Jeśli to pierwsze uruchomienie, zapisujemy aktualne oferty, żeby nie spamować starymi
                 if not seen_items and unique_items:
                     seen_items.update(unique_items)
                     print("Zainicjowano bazę znanych ofert.")
@@ -88,13 +83,14 @@ async def vinted_bot_loop():
                             msg = f"🔥 **Nowa oferta na Vinted!**\n\n[Sprawdź ofertę]({link})"
                             print(f"Wysyłam powiadomienie: {link}")
                             send_telegram_message(msg)
-                            await asyncio.sleep(1)
+            else:
+                print(f"Błąd HTTP: {response.status_code}")
 
-            except Exception as e:
-                print(f"Błąd podczas pobierania Vinted: {e}")
+        except Exception as e:
+            print(f"Błąd podczas pobierania Vinted: {e}")
 
-            # Odczekaj 3 minuty przed kolejnym sprawdzeniem (żeby nie zablokowało IP)
-            await asyncio.sleep(180)
+        # Czekaj 3 minuty
+        time.sleep(180)
 
 if __name__ == "__main__":
-    asyncio.run(vinted_bot_loop())
+    vinted_bot_loop()
