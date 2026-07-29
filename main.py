@@ -6,8 +6,8 @@ import requests
 from bs4 import BeautifulSoup
 
 # Konfiguracja Telegrama
-TELEGRAM_BOT_TOKEN = "TUTAJ_WPISZ_SWOJ_TOKEN"
-TELEGRAM_CHAT_ID = "TUTAJ_WPISZ_SWOJE_CHAT_ID"
+TELEGRAM_BOT_TOKEN = "8616098944:AAF18VtLKoU4Tc9mceOISyOYsMb8FuAkhfM"
+TELEGRAM_CHAT_ID = "8652334073"
 
 # Link do wyszukiwania na Vinted
 VINTED_SEARCH_URL = "https://www.vinted.pl/catalog?search_text=nike"
