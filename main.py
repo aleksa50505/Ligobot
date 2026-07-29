@@ -19,18 +19,6 @@ DEFAULT_VINTED_URL = (
 )
 VINTED_HOME_URL = "https://www.vinted.pl/"
 
-# Bright Data configuration (Automatyczna rotacja IP na porcie 44445)
-BRIGHT_DATA_CUSTOMER = "h1_83f90df2"
-BRIGHT_DATA_ZONE = "proxy_ligo"
-
-def get_proxy_url() -> str:
-    password = os.environ.get("BRIGHT_DATA_PASSWORD", "").strip()
-    return (
-        f"http://brd-customer-{BRIGHT_DATA_CUSTOMER}-zone-{BRIGHT_DATA_ZONE}-country-pl:"
-        f"{password}@brd.superproxy.io:44445"
-    )
-
-# Pełny, wielojęzyczny słownik grup fraz wyszukiwania LEGO
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("pudełko", "knights"),
     ("pudelko", "knights"),
@@ -110,7 +98,7 @@ KURSY_WALUT: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# Serwer HTTP dla Render 24/7 (zapobiega usypianiu aplikacji)
+# Serwer HTTP dla Render 24/7
 # ---------------------------------------------------------------------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -143,15 +131,14 @@ class Config:
     def from_environment(cls) -> Config:
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-
+        
+        # BEZPOŚREDNIE pobranie gotowego linku PROXY_URL z Rendera (bez sklejania hasła w kodzie)
         proxy = os.environ.get("PROXY_URL", "").strip()
-        if not proxy:
-            proxy = get_proxy_url()
 
         return cls(
             telegram_bot_token=token,
             telegram_chat_id=chat_id,
-            vinted_url=DEFAULT_VINTED_URL,  # Zawsze wymusza LEGO, ignorując stare wpisy z nike
+            vinted_url=DEFAULT_VINTED_URL,
             max_price_pln=float(os.environ.get("MAX_CENA_PLN", "120")),
             interval_seconds=int(os.environ.get("CHECK_INTERVAL_SECONDS", "120")),
             proxy_url=proxy,
@@ -169,7 +156,7 @@ class LegoDealMonitor:
         self._init_session()
 
     def _init_session(self) -> None:
-        print("Inicjalizacja sesji Vinted przez Bright Data (Port 44445, automatyczna rotacja IP)...")
+        print("Inicjalizacja sesji Vinted przez Bright Data (Port 44445)...")
         proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
         
         session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
@@ -322,7 +309,7 @@ class LegoDealMonitor:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Monitoruję oferty przez Bright Data (automatyczna rotacja IP)."
+                "Monitoruję oferty przez Bright Data."
             )
             print(f"Bot zainicjowany — załadowano {len(self.seen_ids)} ofert.")
             return
