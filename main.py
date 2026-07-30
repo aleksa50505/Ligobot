@@ -15,11 +15,11 @@ from curl_cffi import requests as cffi_requests
 
 DEFAULT_VINTED_URL = (
     "https://www.vinted.pl/api/v2/catalog/items"
-    "?search_text=lego&order=newest_first&per_page=30"
+    "?search_text=lego&order=newest_first&per_page=96"
 )
 VINTED_HOME_URL = "https://www.vinted.pl/"
 
-# Tylko grupy, gdzie wymagane słowa muszą wystąpić razem (w dowolnej kolejności)
+# Rygorystyczne grupy fraz: WSZYSTKIE słowa z danej grupy muszą wystąpić w ogłoszeniu
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("pudełko", "knights"),
     ("pudelko", "knights"),
@@ -122,8 +122,6 @@ class Config:
     def from_environment(cls) -> Config:
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-        
-        # Pobieranie proxy i upewnienie się, że ma poprawny format
         proxy = os.environ.get("PROXY_URL", "").strip()
 
         return cls(
@@ -147,7 +145,7 @@ class LegoDealMonitor:
         self._init_session()
 
     def _init_session(self) -> None:
-        print("Inicjalizacja sesji Vinted przez Proxy...")
+        print("Inicjalizacja sesji Vinted przez Bright Data Proxy...")
         proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
         
         session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
@@ -161,7 +159,10 @@ class LegoDealMonitor:
                 timeout=25,
             )
         except Exception as exc:
-            raise RuntimeError(f"Błąd sieci przy inicjalizacji proxy: {exc}") from exc
+            raise RuntimeError(f"Błąd sieci przy połączeniu przez proxy: {exc}") from exc
+
+        if resp.status_code == 407:
+            raise RuntimeError("Błąd 407: Proxy wymaga uwierzytelnienia.")
 
         if resp.status_code == 403:
             raise RuntimeError("Cloudflare zablokowało zapytanie (403).")
@@ -172,10 +173,10 @@ class LegoDealMonitor:
             if token:
                 self._session = session
                 self._bearer_token = token
-                print(f"Sesja gotowa — pobrano token ({len(token)} znaków).")
+                print(f"Sesja przez proxy gotowa — pobrano token ({len(token)} znaków).")
                 return
 
-        raise RuntimeError(f"Nie udało się zainicjalizować sesji Vinted. Status: {resp.status_code}")
+        raise RuntimeError(f"Nie udało się zainicjalizować sesji Vinted przez proxy. Status: {resp.status_code}")
 
     def _api_headers(self) -> dict[str, str]:
         return {
@@ -231,8 +232,8 @@ class LegoDealMonitor:
                     raise RuntimeError("Nieprawidłowy format odpowiedzi z API Vinted.")
                 return [i for i in items if isinstance(i, dict)]
 
-            if resp.status_code in (401, 403) and attempt == 0:
-                print(f"HTTP {resp.status_code} — odświeżam sesję.")
+            if resp.status_code in (401, 403, 407) and attempt == 0:
+                print(f"HTTP {resp.status_code} — odświeżam sesję i proxy.")
                 self._refresh_session()
                 continue
 
@@ -257,7 +258,6 @@ class LegoDealMonitor:
     @staticmethod
     def matches(title: str, description: str) -> bool:
         full_text = f"{title} {description}".casefold()
-        # Wymóg: WSZYSTKA słowa z danej grupy muszą wystąpić w ogłoszeniu
         for group in FRAZY_GRUPY:
             if all(word.casefold() in full_text for word in group):
                 return True
@@ -295,33 +295,39 @@ class LegoDealMonitor:
         if self.last_vinted_error is not None:
             self.last_vinted_error = None
 
-        # Pierwsze uruchomienie: ciche zapamiętanie ID, zero starych alertów
+        # KLUCZOWE: Przy pierwszym uruchomieniu po prostu zapamiętujemy WSZYSTKIE pobrane ID, 
+        # żeby absolutnie ŻADNE stare ogłoszenie z tej pierwszej paczki nie wywołało powiadomienia.
         if not self.seen_ids:
             for item in items:
                 if "id" in item:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Filtrowanie wielowyrazowe + ochrona przed starymi ofertami aktywne."
+                "Zainicjalizowano filtrację. Odrzucam oferty > 120 zł i niedopasowane frazy."
             )
             print(f"Bot zainicjowany — zignorowano {len(self.seen_ids)} historycznych ofert na start.")
             return
 
+        # Przetwarzamy nowe ogłoszenia od najstarszych w nowej paczce do najświeższych
         for item in reversed(items):
             if "id" not in item:
                 continue
             item_id = str(item["id"])
             if item_id in self.seen_ids:
                 continue
+            
+            # Od razu oznaczamy ID jako widziane
             self.seen_ids.add(item_id)
 
             title = str(item.get("title", "")).strip()
             description = str(item.get("description", "")).strip()
             price_pln, raw_price, currency = self.price_in_pln(item)
 
+            # 1. Rygorystyczny filtr ceny (maksymalnie 120 zł)
             if price_pln > self.config.max_price_pln:
                 continue
 
+            # 2. Rygorystyczny filtr fraz (WSZYSTKIE słowa z grupy muszą wystąpić)
             if not self.matches(title, description):
                 continue
 
@@ -332,7 +338,7 @@ class LegoDealMonitor:
             print(f"✅ Alert wysłany [{price_pln:.2f} PLN]: {title}")
 
     def run(self) -> None:
-        print("Uruchamianie monitora okazji LEGO...")
+        print("Uruchamianie monitora okazji LEGO przez Bright Data...")
         while True:
             self.check_vinted()
             time.sleep(self.config.interval_seconds)
