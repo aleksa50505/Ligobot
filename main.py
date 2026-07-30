@@ -174,7 +174,6 @@ class LegoDealMonitor:
             print(f"Błąd zapisu ID do pliku: {e}")
 
     def _init_session_with_retry(self) -> None:
-        """Próbuję zainicjalizować sesję z rotacją, a w razie 407 czeka i próbuje ponownie, zamiast wyłączać bota."""
         while True:
             try:
                 self._init_session()
@@ -185,9 +184,17 @@ class LegoDealMonitor:
 
     def _init_session(self) -> None:
         print("Inicjalizacja sesji Vinted przez Bright Data Proxy...")
-        proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
         
-        # Używamy stabilnego nagłówka i jawnego przekazania proxy do curl_cffi
+        proxy_str = self.config.proxy_url
+        proxies = None
+        
+        if proxy_str:
+            # Poprawka formatowania proxy dla curl_cffi w celu uniknięcia błędu 407
+            # Upewniamy się, że dane uwierzytelniające są poprawnie interpretowane przez tunel
+            if "://" not in proxy_str:
+                proxy_str = f"http://{proxy_str}"
+            proxies = {"http": proxy_str, "https": proxy_str}
+
         session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
         try:
             resp = session.get(
@@ -203,7 +210,11 @@ class LegoDealMonitor:
             raise RuntimeError(f"Błąd sieci przy połączeniu przez proxy: {exc}") from exc
 
         if resp.status_code == 407:
-            raise RuntimeError("Błąd 407: Proxy wymaga uwierzytelnienia (błędny login/hasło lub blokada IP w puli).")
+            raise RuntimeError(
+                "Błąd 407: Serwer proxy odrzucił uwierzytelnianie. "
+                "Sprawdź w panelu Render, czy zmienna PROXY_URL nie zawiera literówki "
+                "lub czy dane w Bright Data są aktywne."
+            )
 
         if resp.status_code == 403:
             raise RuntimeError("Cloudflare zablokowało zapytanie (403).")
@@ -371,7 +382,7 @@ class LegoDealMonitor:
         if is_first_run:
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Połączenie przez proxy stabilne. Filtry aktywne."
+                "Proxy połączone pomyślnie. Filtry i pamięć trwała aktywne."
             )
             print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert startowych.")
 
