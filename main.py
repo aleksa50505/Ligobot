@@ -19,7 +19,7 @@ DEFAULT_VINTED_URL = (
 )
 VINTED_HOME_URL = "https://www.vinted.pl/"
 
-# Każda grupa to zestaw słów, które MUSZĄ wystąpić w ogłoszeniu (w dowolnej kolejności)
+# Tylko grupy, gdzie wymagane słowa muszą wystąpić razem (w dowolnej kolejności)
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("pudełko", "knights"),
     ("pudelko", "knights"),
@@ -38,15 +38,7 @@ FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("lot", "lego"),
     ("lego", "po", "dzieciach"),
     ("lego", "po", "dziecku"),
-    ("laatikollinen", "irtolegoja"),
-    ("irtolegoja",),
     ("laatikollinen", "lego"),
-    ("kaladėlės",),
-    ("kaladeles",),
-    ("ivairios", "kaladeles"),
-    ("įvairios", "kaladėlės"),
-    ("kaina", "uz", "visus"),
-    ("kaina", "už", "visus"),
     ("many", "lego"),
     ("many", "sets", "lego"),
     ("lego", "box"),
@@ -74,7 +66,6 @@ FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("lego", "kg"),
     ("partia", "lego"),
     ("lego", "elementy"),
-    ("bloki", "kg"),
     ("lego", "luzem"),
     ("lego", "luz"),
     ("lego", "pudełku"),
@@ -83,7 +74,6 @@ FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("duzo", "lego"),
     ("lego", "części"),
     ("lego", "czesci"),
-    ("klocki", "kg"),
     ("lego", "sprzedam"),
     ("torba", "lego"),
     ("sets", "lego"),
@@ -132,6 +122,8 @@ class Config:
     def from_environment(cls) -> Config:
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+        
+        # Pobieranie proxy i upewnienie się, że ma poprawny format
         proxy = os.environ.get("PROXY_URL", "").strip()
 
         return cls(
@@ -155,7 +147,7 @@ class LegoDealMonitor:
         self._init_session()
 
     def _init_session(self) -> None:
-        print("Inicjalizacja sesji Vinted przez Bright Data (Port 44445)...")
+        print("Inicjalizacja sesji Vinted przez Proxy...")
         proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
         
         session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
@@ -265,6 +257,7 @@ class LegoDealMonitor:
     @staticmethod
     def matches(title: str, description: str) -> bool:
         full_text = f"{title} {description}".casefold()
+        # Wymóg: WSZYSTKA słowa z danej grupy muszą wystąpić w ogłoszeniu
         for group in FRAZY_GRUPY:
             if all(word.casefold() in full_text for word in group):
                 return True
@@ -302,14 +295,14 @@ class LegoDealMonitor:
         if self.last_vinted_error is not None:
             self.last_vinted_error = None
 
-        # Pierwsze uruchomienie: ciche zapamiętanie ID, zero starych alertów na start
+        # Pierwsze uruchomienie: ciche zapamiętanie ID, zero starych alertów
         if not self.seen_ids:
             for item in items:
                 if "id" in item:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Pominięto stare oferty. Monitoruję tylko nowe okazje."
+                "Filtrowanie wielowyrazowe + ochrona przed starymi ofertami aktywne."
             )
             print(f"Bot zainicjowany — zignorowano {len(self.seen_ids)} historycznych ofert na start.")
             return
