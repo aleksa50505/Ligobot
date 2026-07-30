@@ -18,6 +18,7 @@ DEFAULT_VINTED_URL = (
     "?search_text=lego&order=newest_first&per_page=96"
 )
 VINTED_HOME_URL = "https://www.vinted.pl/"
+SEEN_FILE = "seen_ids.txt"
 
 # Rygorystyczne grupy fraz: WSZYSTKIE słowa z danej grupy muszą wystąpić w ogłoszeniu
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
@@ -137,12 +138,35 @@ class Config:
 class LegoDealMonitor:
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.seen_ids: set[str] = set()
+        self.seen_ids: set[str] = self._load_seen_ids()
         self.telegram_error_reported = False
         self.last_vinted_error: str | None = None
         self._session: cffi_requests.Session | None = None
         self._bearer_token: str = ""
         self._init_session()
+
+    def _load_seen_ids(self) -> set[str]:
+        """Wczytuje zapisane ID ofert z pliku na dysku, aby restarty nie resetowały pamięci bota."""
+        seen = set()
+        if os.path.exists(SEEN_FILE):
+            try:
+                with open(SEEN_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        item_id = line.strip()
+                        if item_id:
+                            seen.add(item_id)
+                print(f"Wczytano {len(seen)} historycznych ID z pliku {SEEN_FILE}.")
+            except Exception as e:
+                print(f"Błąd odczytu pliku seen_ids: {e}")
+        return seen
+
+    def _save_seen_id_to_disk(self, item_id: string_type := "") -> None:
+        """Dopisuje nowe ID bezpośrednio do pliku na dysku."""
+        try:
+            with open(SEEN_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{item_id}\n")
+        except Exception as e:
+            print(f"Błąd zapisu ID do pliku: {e}")
 
     def _init_session(self) -> None:
         print("Inicjalizacja sesji Vinted przez Bright Data Proxy...")
@@ -257,8 +281,10 @@ class LegoDealMonitor:
 
     @staticmethod
     def matches(title: str, description: str) -> bool:
+        # Łączymy tytuł i opis, zamieniamy na małe litery dla pełnej niezależności od wielkości znaków
         full_text = f"{title} {description}".casefold()
         for group in FRAZY_GRUPY:
+            # Sprawdzamy czy KAŻDE słowo z danej grupy występuje w tekście (kolejność nie ma znaczenia)
             if all(word.casefold() in full_text for word in group):
                 return True
         return False
@@ -295,35 +321,31 @@ class LegoDealMonitor:
         if self.last_vinted_error is not None:
             self.last_vinted_error = None
 
-        # KLUCZOWE: Przy pierwszym uruchomieniu po prostu zapamiętujemy WSZYSTKIE pobrane ID, 
-        # żeby absolutnie ŻADNE stare ogłoszenie z tej pierwszej paczki nie wywołało powiadomienia.
-        if not self.seen_ids:
-            for item in items:
-                if "id" in item:
-                    self.seen_ids.add(str(item["id"]))
-            self.send_telegram(
-                "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Zainicjalizowano filtrację. Odrzucam oferty > 120 zł i niedopasowane frazy."
-            )
-            print(f"Bot zainicjowany — zignorowano {len(self.seen_ids)} historycznych ofert na start.")
-            return
+        # Jeśli to pierwsze uruchomienie i plik seen_ids.txt był pusty, wrzucamy obecne ID do bazy,
+        # żeby odciąć przeszłość i nie spamować starymi ogłoszeniami z pierwszego pobrania.
+        is_first_run = len(self.seen_ids) == 0
 
-        # Przetwarzamy nowe ogłoszenia od najstarszych w nowej paczce do najświeższych
         for item in reversed(items):
             if "id" not in item:
                 continue
             item_id = str(item["id"])
+            
             if item_id in self.seen_ids:
                 continue
             
-            # Od razu oznaczamy ID jako widziane
+            # Zapisujemy w pamięci i na dysku, żeby uniknąć duplikatów przy restartach
             self.seen_ids.add(item_id)
+            self._save_seen_id_to_disk(item_id)
+
+            if is_first_run:
+                # Przy całkowicie pierwszym uruchomieniu tylko kolekcjonujemy ID, nic nie wysyłamy
+                continue
 
             title = str(item.get("title", "")).strip()
             description = str(item.get("description", "")).strip()
             price_pln, raw_price, currency = self.price_in_pln(item)
 
-            # 1. Rygorystyczny filtr ceny (maksymalnie 120 zł)
+            # 1. Filtr ceny (maksymalnie 120 zł)
             if price_pln > self.config.max_price_pln:
                 continue
 
@@ -336,6 +358,13 @@ class LegoDealMonitor:
                 self.format_alert(title, description, price_pln, raw_price, currency, url)
             )
             print(f"✅ Alert wysłany [{price_pln:.2f} PLN]: {title}")
+
+        if is_first_run:
+            self.send_telegram(
+                "🤖 <b>Ligobot LEGO aktywowany z trwałą pamięcią!</b>\n"
+                "Od teraz monitoruję tylko świeże okazje (cena <= 120 zł, rygorystyczne frazy)."
+            )
+            print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert startowych.")
 
     def run(self) -> None:
         print("Uruchamianie monitora okazji LEGO przez Bright Data...")
