@@ -189,10 +189,18 @@ class LegoDealMonitor:
         proxies = None
         
         if proxy_str:
-            # Poprawka formatowania proxy dla curl_cffi w celu uniknięcia błędu 407
-            # Upewniamy się, że dane uwierzytelniające są poprawnie interpretowane przez tunel
             if "://" not in proxy_str:
                 proxy_str = f"http://{proxy_str}"
+            
+            # Bezpieczne parsowanie URL proxy zapobiegające błędom 407 przy znakach specjalnych w haśle
+            parsed = urllib.parse.urlparse(proxy_str)
+            if parsed.username and parsed.password:
+                encoded_password = urllib.parse.quote(parsed.password, safe="")
+                netloc = f"{parsed.username}:{encoded_password}@{parsed.hostname}"
+                if parsed.port:
+                    netloc += f":{parsed.port}"
+                proxy_str = urllib.parse.urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
             proxies = {"http": proxy_str, "https": proxy_str}
 
         session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
@@ -212,8 +220,7 @@ class LegoDealMonitor:
         if resp.status_code == 407:
             raise RuntimeError(
                 "Błąd 407: Serwer proxy odrzucił uwierzytelnianie. "
-                "Sprawdź w panelu Render, czy zmienna PROXY_URL nie zawiera literówki "
-                "lub czy dane w Bright Data są aktywne."
+                "Sprawdź w panelu Bright Data, czy strefa jest aktywna i czy login/hasło są poprawne."
             )
 
         if resp.status_code == 403:
@@ -382,7 +389,7 @@ class LegoDealMonitor:
         if is_first_run:
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Proxy połączone pomyślnie. Filtry i pamięć trwała aktywne."
+                "Proxy zabezpieczone i połączone."
             )
             print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert startowych.")
 
