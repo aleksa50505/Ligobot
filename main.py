@@ -143,10 +143,9 @@ class LegoDealMonitor:
         self.last_vinted_error: str | None = None
         self._session: cffi_requests.Session | None = None
         self._bearer_token: str = ""
-        self._init_session()
+        self._init_session_with_retry()
 
     def _load_seen_ids(self) -> set[str]:
-        """Wczytuje z pliku ostatnie ID, chroniąc przed wyczerpaniem pamięci RAM."""
         seen = set()
         if os.path.exists(SEEN_FILE):
             try:
@@ -162,7 +161,6 @@ class LegoDealMonitor:
         return seen
 
     def _save_seen_id_to_disk(self, item_id: str = "") -> None:
-        """Dopisuje nowe ID do pliku i dba o to, by plik nie urósł za duży."""
         try:
             with open(SEEN_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{item_id}\n")
@@ -175,10 +173,21 @@ class LegoDealMonitor:
         except Exception as e:
             print(f"Błąd zapisu ID do pliku: {e}")
 
+    def _init_session_with_retry(self) -> None:
+        """Próbuję zainicjalizować sesję z rotacją, a w razie 407 czeka i próbuje ponownie, zamiast wyłączać bota."""
+        while True:
+            try:
+                self._init_session()
+                return
+            except Exception as e:
+                print(f"[OSTRZEŻENIE] Problem z proxy/siecią: {e}. Ponawiam próbę za 15 sekund...")
+                time.sleep(15)
+
     def _init_session(self) -> None:
         print("Inicjalizacja sesji Vinted przez Bright Data Proxy...")
         proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
         
+        # Używamy stabilnego nagłówka i jawnego przekazania proxy do curl_cffi
         session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
         try:
             resp = session.get(
@@ -186,6 +195,7 @@ class LegoDealMonitor:
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
                 },
                 timeout=25,
             )
@@ -193,7 +203,7 @@ class LegoDealMonitor:
             raise RuntimeError(f"Błąd sieci przy połączeniu przez proxy: {exc}") from exc
 
         if resp.status_code == 407:
-            raise RuntimeError("Błąd 407: Proxy wymaga uwierzytelnienia.")
+            raise RuntimeError("Błąd 407: Proxy wymaga uwierzytelnienia (błędny login/hasło lub blokada IP w puli).")
 
         if resp.status_code == 403:
             raise RuntimeError("Cloudflare zablokowało zapytanie (403).")
@@ -220,7 +230,7 @@ class LegoDealMonitor:
 
     def _refresh_session(self) -> None:
         print("Odświeżanie sesji Vinted...")
-        self._init_session()
+        self._init_session_with_retry()
 
     def send_telegram(self, text: str) -> None:
         payload = urllib.parse.urlencode({
@@ -361,7 +371,7 @@ class LegoDealMonitor:
         if is_first_run:
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Pamięć trwała i filtry aktywne."
+                "Połączenie przez proxy stabilne. Filtry aktywne."
             )
             print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert startowych.")
 
