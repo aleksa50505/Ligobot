@@ -264,11 +264,7 @@ class LegoDealMonitor:
 
     @staticmethod
     def matches(title: str, description: str) -> bool:
-        # Łączymy tytuł i opis, zamieniamy na małe litery
         full_text = f"{title} {description}".casefold()
-        
-        # Sprawdzamy, czy chociaż jedna grupa spełnia warunek:
-        # WSZYSTKIE słowa z danej grupy muszą znajdować się w tekście (niezależnie od kolejności)
         for group in FRAZY_GRUPY:
             if all(word.casefold() in full_text for word in group):
                 return True
@@ -306,14 +302,14 @@ class LegoDealMonitor:
         if self.last_vinted_error is not None:
             self.last_vinted_error = None
 
-        # Pierwsze uruchomienie: tylko zapamiętujemy ID z tablicy, nic nie wysyłamy (brak starych alertów)
+        # Pierwsze uruchomienie: ciche zapamiętanie ID, zero starych alertów na start
         if not self.seen_ids:
             for item in items:
                 if "id" in item:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Filtrowanie słów w dowolnej kolejności + max 120 zł aktywne."
+                "Pominięto stare oferty. Monitoruję tylko nowe okazje."
             )
             print(f"Bot zainicjowany — zignorowano {len(self.seen_ids)} historycznych ofert na start.")
             return
@@ -330,11 +326,9 @@ class LegoDealMonitor:
             description = str(item.get("description", "")).strip()
             price_pln, raw_price, currency = self.price_in_pln(item)
 
-            # Rygorystyczny filtr cenowy do 120 zł
             if price_pln > self.config.max_price_pln:
                 continue
 
-            # Rygorystyczny filtr fraz (wszystkie słowa z grupy muszą wystąpić w dowolnej kolejności)
             if not self.matches(title, description):
                 continue
 
