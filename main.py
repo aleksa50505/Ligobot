@@ -19,6 +19,7 @@ DEFAULT_VINTED_URL = (
 )
 VINTED_HOME_URL = "https://www.vinted.pl/"
 
+# Każda grupa to zestaw słów, które MUSZĄ wystąpić w ogłoszeniu (w dowolnej kolejności)
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("pudełko", "knights"),
     ("pudelko", "knights"),
@@ -131,8 +132,6 @@ class Config:
     def from_environment(cls) -> Config:
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-        
-        # BEZPOŚREDNIE pobranie gotowego linku PROXY_URL z Rendera (bez sklejania hasła w kodzie)
         proxy = os.environ.get("PROXY_URL", "").strip()
 
         return cls(
@@ -265,11 +264,15 @@ class LegoDealMonitor:
 
     @staticmethod
     def matches(title: str, description: str) -> bool:
+        # Łączymy tytuł i opis, zamieniamy na małe litery
         full_text = f"{title} {description}".casefold()
-        return any(
-            all(word.casefold() in full_text for word in group)
-            for group in FRAZY_GRUPY
-        )
+        
+        # Sprawdzamy, czy chociaż jedna grupa spełnia warunek:
+        # WSZYSTKIE słowa z danej grupy muszą znajdować się w tekście (niezależnie od kolejności)
+        for group in FRAZY_GRUPY:
+            if all(word.casefold() in full_text for word in group):
+                return True
+        return False
 
     def format_alert(
         self,
@@ -303,18 +306,18 @@ class LegoDealMonitor:
         if self.last_vinted_error is not None:
             self.last_vinted_error = None
 
+        # Pierwsze uruchomienie: tylko zapamiętujemy ID z tablicy, nic nie wysyłamy (brak starych alertów)
         if not self.seen_ids:
             for item in items:
                 if "id" in item:
                     self.seen_ids.add(str(item["id"]))
             self.send_telegram(
                 "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Monitoruję oferty przez Bright Data."
+                "Filtrowanie słów w dowolnej kolejności + max 120 zł aktywne."
             )
-            print(f"Bot zainicjowany — załadowano {len(self.seen_ids)} ofert.")
+            print(f"Bot zainicjowany — zignorowano {len(self.seen_ids)} historycznych ofert na start.")
             return
 
-        alerted = 0
         for item in reversed(items):
             if "id" not in item:
                 continue
@@ -327,9 +330,11 @@ class LegoDealMonitor:
             description = str(item.get("description", "")).strip()
             price_pln, raw_price, currency = self.price_in_pln(item)
 
+            # Rygorystyczny filtr cenowy do 120 zł
             if price_pln > self.config.max_price_pln:
                 continue
 
+            # Rygorystyczny filtr fraz (wszystkie słowa z grupy muszą wystąpić w dowolnej kolejności)
             if not self.matches(title, description):
                 continue
 
@@ -337,7 +342,6 @@ class LegoDealMonitor:
             self.send_telegram(
                 self.format_alert(title, description, price_pln, raw_price, currency, url)
             )
-            alerted += 1
             print(f"✅ Alert wysłany [{price_pln:.2f} PLN]: {title}")
 
     def run(self) -> None:
