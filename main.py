@@ -146,25 +146,32 @@ class LegoDealMonitor:
         self._init_session()
 
     def _load_seen_ids(self) -> set[str]:
-        """Wczytuje zapisane ID ofert z pliku na dysku, aby restarty nie resetowały pamięci bota."""
+        """Wczytuje z pliku ostatnie ID, chroniąc przed wyczerpaniem pamięci RAM."""
         seen = set()
         if os.path.exists(SEEN_FILE):
             try:
                 with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                    for line in f:
+                    lines = f.readlines()
+                    for line in lines[-5000:]:
                         item_id = line.strip()
                         if item_id:
                             seen.add(item_id)
-                print(f"Wczytano {len(seen)} historycznych ID z pliku {SEEN_FILE}.")
+                print(f"Wczytano {len(seen)} ostatnich ID z pliku {SEEN_FILE}.")
             except Exception as e:
                 print(f"Błąd odczytu pliku seen_ids: {e}")
         return seen
 
-    def _save_seen_id_to_disk(self, item_id: string_type := "") -> None:
-        """Dopisuje nowe ID bezpośrednio do pliku na dysku."""
+    def _save_seen_id_to_disk(self, item_id: str = "") -> None:
+        """Dopisuje nowe ID do pliku i dba o to, by plik nie urósł za duży."""
         try:
             with open(SEEN_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{item_id}\n")
+            
+            if len(self.seen_ids) > 6000:
+                recent = list(self.seen_ids)[-5000:]
+                with open(SEEN_FILE, "w", encoding="utf-8") as f:
+                    f.write("\n".join(recent) + "\n")
+                self.seen_ids = set(recent)
         except Exception as e:
             print(f"Błąd zapisu ID do pliku: {e}")
 
@@ -281,10 +288,8 @@ class LegoDealMonitor:
 
     @staticmethod
     def matches(title: str, description: str) -> bool:
-        # Łączymy tytuł i opis, zamieniamy na małe litery dla pełnej niezależności od wielkości znaków
         full_text = f"{title} {description}".casefold()
         for group in FRAZY_GRUPY:
-            # Sprawdzamy czy KAŻDE słowo z danej grupy występuje w tekście (kolejność nie ma znaczenia)
             if all(word.casefold() in full_text for word in group):
                 return True
         return False
@@ -321,8 +326,6 @@ class LegoDealMonitor:
         if self.last_vinted_error is not None:
             self.last_vinted_error = None
 
-        # Jeśli to pierwsze uruchomienie i plik seen_ids.txt był pusty, wrzucamy obecne ID do bazy,
-        # żeby odciąć przeszłość i nie spamować starymi ogłoszeniami z pierwszego pobrania.
         is_first_run = len(self.seen_ids) == 0
 
         for item in reversed(items):
@@ -333,23 +336,19 @@ class LegoDealMonitor:
             if item_id in self.seen_ids:
                 continue
             
-            # Zapisujemy w pamięci i na dysku, żeby uniknąć duplikatów przy restartach
             self.seen_ids.add(item_id)
             self._save_seen_id_to_disk(item_id)
 
             if is_first_run:
-                # Przy całkowicie pierwszym uruchomieniu tylko kolekcjonujemy ID, nic nie wysyłamy
                 continue
 
             title = str(item.get("title", "")).strip()
             description = str(item.get("description", "")).strip()
             price_pln, raw_price, currency = self.price_in_pln(item)
 
-            # 1. Filtr ceny (maksymalnie 120 zł)
             if price_pln > self.config.max_price_pln:
                 continue
 
-            # 2. Rygorystyczny filtr fraz (WSZYSTKIE słowa z grupy muszą wystąpić)
             if not self.matches(title, description):
                 continue
 
@@ -361,8 +360,8 @@ class LegoDealMonitor:
 
         if is_first_run:
             self.send_telegram(
-                "🤖 <b>Ligobot LEGO aktywowany z trwałą pamięcią!</b>\n"
-                "Od teraz monitoruję tylko świeże okazje (cena <= 120 zł, rygorystyczne frazy)."
+                "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
+                "Pamięć trwała i filtry aktywne."
             )
             print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert startowych.")
 
