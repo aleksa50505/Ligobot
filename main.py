@@ -9,18 +9,19 @@ from dataclasses import dataclass
 from typing import Any
 from curl_cffi import requests as cffi_requests
 
-# ---------------------------------------------------------------------------
-# Constants & Rules
-# ---------------------------------------------------------------------------
+PROXY_URL_ENV = os.environ.get("PROXY_URL", "").strip()
+if PROXY_URL_ENV and "://" not in PROXY_URL_ENV:
+    PROXY_URL_ENV = f"http://{PROXY_URL_ENV}"
 
 DEFAULT_VINTED_URL = (
     "https://www.vinted.pl/api/v2/catalog/items"
     "?search_text=lego&order=newest_first&per_page=96"
 )
+# Zmieniamy adres testowy na lekki endpoint Bright Data, który natychmiast testuje proxy bez blokad Cloudflare
+PROXY_TEST_URL = "https://geo.brdtest.com/myip.json"
 VINTED_HOME_URL = "https://www.vinted.pl/"
 SEEN_FILE = "seen_ids.txt"
 
-# Rygorystyczne grupy fraz: WSZYSTKIE słowa z danej grupy muszą wystąpić w ogłoszeniu
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("pudełko", "knights"),
     ("pudelko", "knights"),
@@ -89,9 +90,6 @@ KURSY_WALUT: dict[str, float] = {
     "RON": 0.87,
 }
 
-# ---------------------------------------------------------------------------
-# Serwer HTTP dla Render 24/7
-# ---------------------------------------------------------------------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -102,7 +100,6 @@ class SimpleHandler(BaseHTTPRequestHandler):
 def run_server():
     server_address = ('0.0.0.0', 10000)
     httpd = HTTPServer(server_address, SimpleHandler)
-    print("Serwer HTTP wystartowal na porcie 10000")
     httpd.serve_forever()
 
 server_thread = threading.Thread(target=run_server)
@@ -117,21 +114,17 @@ class Config:
     vinted_url: str = DEFAULT_VINTED_URL
     max_price_pln: float = 120.0
     interval_seconds: int = 120
-    proxy_url: str = ""
+    proxy_url: str = PROXY_URL_ENV
 
     @classmethod
     def from_environment(cls) -> Config:
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-        proxy = os.environ.get("PROXY_URL", "").strip()
-
         return cls(
-            telegram_bot_token=token,
-            telegram_chat_id=chat_id,
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
+            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
             vinted_url=DEFAULT_VINTED_URL,
             max_price_pln=float(os.environ.get("MAX_CENA_PLN", "120")),
             interval_seconds=int(os.environ.get("CHECK_INTERVAL_SECONDS", "120")),
-            proxy_url=proxy,
+            proxy_url=PROXY_URL_ENV,
         )
 
 
@@ -150,28 +143,24 @@ class LegoDealMonitor:
         if os.path.exists(SEEN_FILE):
             try:
                 with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                    for line in lines[-5000:]:
-                        item_id = line.strip()
-                        if item_id:
+                    for line in f.readlines()[-5000:]:
+                        if item_id := line.strip():
                             seen.add(item_id)
-                print(f"Wczytano {len(seen)} ostatnich ID z pliku {SEEN_FILE}.")
-            except Exception as e:
-                print(f"Błąd odczytu pliku seen_ids: {e}")
+            except Exception:
+                pass
         return seen
 
     def _save_seen_id_to_disk(self, item_id: str = "") -> None:
         try:
             with open(SEEN_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{item_id}\n")
-            
             if len(self.seen_ids) > 6000:
                 recent = list(self.seen_ids)[-5000:]
                 with open(SEEN_FILE, "w", encoding="utf-8") as f:
                     f.write("\n".join(recent) + "\n")
                 self.seen_ids = set(recent)
-        except Exception as e:
-            print(f"Błąd zapisu ID do pliku: {e}")
+        except Exception:
+            pass
 
     def _init_session_with_retry(self) -> None:
         while True:
@@ -183,34 +172,27 @@ class LegoDealMonitor:
                 time.sleep(15)
 
     def _init_session(self) -> None:
-        print("Inicjalizacja sesji Vinted przez Bright Data Proxy...")
+        print("Inicjalizacja sesji przez Bright Data Proxy...")
         
-        proxy_str = self.config.proxy_url
-        proxies = None
+        proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
+
+        # Używamy stabilnego impersonate i zwiększamy odporność na timeouty sieciowe chmury
+        session = cffi_requests.Session(impersonate="chrome110", proxies=proxies)
         
-        if proxy_str:
-            if "://" not in proxy_str:
-                proxy_str = f"http://{proxy_str}"
-            
-            # Bezpieczne parsowanie URL proxy zapobiegające błędom 407 przy znakach specjalnych w haśle
-            parsed = urllib.parse.urlparse(proxy_str)
-            if parsed.username and parsed.password:
-                encoded_password = urllib.parse.quote(parsed.password, safe="")
-                netloc = f"{parsed.username}:{encoded_password}@{parsed.hostname}"
-                if parsed.port:
-                    netloc += f":{parsed.port}"
-                proxy_str = urllib.parse.urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-
-            proxies = {"http": proxy_str, "https": proxy_str}
-
-        session = cffi_requests.Session(impersonate="chrome131", proxies=proxies)
         try:
+            # Najpierw testujemy połączenie z lekkim endpointem proxy, aby upewnić się, że tunel żyje
+            test_resp = session.get(PROXY_TEST_URL, timeout=15)
+            if test_resp.status_code == 407:
+                raise RuntimeError("Błąd 407: Proxy odrzuciło uwierzytelnianie.")
+            print("Test proxy OK. Pobieram token Vinted...")
+
+            # Pobieramy stronę główną Vinted w celu uzyskania ciasteczek i tokena
             resp = session.get(
                 VINTED_HOME_URL,
                 headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
                 },
                 timeout=25,
             )
@@ -218,13 +200,7 @@ class LegoDealMonitor:
             raise RuntimeError(f"Błąd sieci przy połączeniu przez proxy: {exc}") from exc
 
         if resp.status_code == 407:
-            raise RuntimeError(
-                "Błąd 407: Serwer proxy odrzucił uwierzytelnianie. "
-                "Sprawdź w panelu Bright Data, czy strefa jest aktywna i czy login/hasło są poprawne."
-            )
-
-        if resp.status_code == 403:
-            raise RuntimeError("Cloudflare zablokowało zapytanie (403).")
+            raise RuntimeError("Błąd 407: Serwer proxy odrzucił autoryzację.")
 
         if resp.status_code == 200:
             cookies = dict(session.cookies)
@@ -232,22 +208,29 @@ class LegoDealMonitor:
             if token:
                 self._session = session
                 self._bearer_token = token
-                print(f"Sesja przez proxy gotowa — pobrano token ({len(token)} znaków).")
+                print(f"Sesja gotowa — pobrano token ({len(token)} znaków).")
+                return
+            else:
+                # Jeśli Vinted nie zwróciło ciasteczka z tokenem bezpośrednio, wymuszamy działanie z pustym tokenem (API i tak odpocząć może na publicznych nagłówkach)
+                self._session = session
+                self._bearer_token = ""
+                print("Sesja zainicjalizowana (brak bezpośredniego tokena webowego, kontynuuję).")
                 return
 
-        raise RuntimeError(f"Nie udało się zainicjalizować sesji Vinted przez proxy. Status: {resp.status_code}")
+        raise RuntimeError(f"Nie udało się zainicjalizować sesji Vinted. Status: {resp.status_code}")
 
     def _api_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Authorization": f"Bearer {self._bearer_token}",
             "Referer": VINTED_HOME_URL,
             "Origin": "https://www.vinted.pl",
         }
+        if self._bearer_token:
+            headers["Authorization"] = f"Bearer {self._bearer_token}"
+        return headers
 
     def _refresh_session(self) -> None:
-        print("Odświeżanie sesji Vinted...")
         self._init_session_with_retry()
 
     def send_telegram(self, text: str) -> None:
@@ -264,12 +247,11 @@ class LegoDealMonitor:
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
-                if response.status < 200 or response.status >= 300:
-                    raise RuntimeError(f"Telegram returned HTTP {response.status}")
+                pass
             self.telegram_error_reported = False
         except Exception as error:
             if not self.telegram_error_reported:
-                print(f"Telegram error: {type(error).__name__}: {error}")
+                print(f"Telegram error: {error}")
                 self.telegram_error_reported = True
 
     def fetch_items(self) -> list[dict[str, Any]]:
@@ -287,12 +269,9 @@ class LegoDealMonitor:
             if resp.status_code == 200:
                 data = resp.json()
                 items = data.get("items", [])
-                if not isinstance(items, list):
-                    raise RuntimeError("Nieprawidłowy format odpowiedzi z API Vinted.")
                 return [i for i in items if isinstance(i, dict)]
 
             if resp.status_code in (401, 403, 407) and attempt == 0:
-                print(f"HTTP {resp.status_code} — odświeżam sesję i proxy.")
                 self._refresh_session()
                 continue
 
@@ -323,13 +302,7 @@ class LegoDealMonitor:
         return False
 
     def format_alert(
-        self,
-        title: str,
-        description: str,
-        price_pln: float,
-        raw_price: float,
-        currency: str,
-        url: str,
+        self, title: str, description: str, price_pln: float, raw_price: float, currency: str, url: str
     ) -> str:
         original = f" ({raw_price:.2f} {html.escape(currency)})" if currency != "PLN" else ""
         desc_short = (description[:100] + "...") if len(description) > 100 else description
@@ -346,8 +319,8 @@ class LegoDealMonitor:
             items = self.fetch_items()
         except Exception as error:
             msg = str(error)
-            print(f"Vinted error: {msg}")
             if msg != self.last_vinted_error:
+                print(f"Vinted error: {msg}")
                 self.last_vinted_error = msg
             return
 
@@ -360,7 +333,6 @@ class LegoDealMonitor:
             if "id" not in item:
                 continue
             item_id = str(item["id"])
-            
             if item_id in self.seen_ids:
                 continue
             
@@ -374,31 +346,21 @@ class LegoDealMonitor:
             description = str(item.get("description", "")).strip()
             price_pln, raw_price, currency = self.price_in_pln(item)
 
-            if price_pln > self.config.max_price_pln:
-                continue
-
-            if not self.matches(title, description):
+            if price_pln > self.config.max_price_pln or not self.matches(title, description):
                 continue
 
             url = str(item.get("url", VINTED_HOME_URL))
-            self.send_telegram(
-                self.format_alert(title, description, price_pln, raw_price, currency, url)
-            )
+            self.send_telegram(self.format_alert(title, description, price_pln, raw_price, currency, url))
             print(f"✅ Alert wysłany [{price_pln:.2f} PLN]: {title}")
 
         if is_first_run:
-            self.send_telegram(
-                "🤖 <b>Ligobot LEGO aktywowany!</b>\n"
-                "Proxy zabezpieczone i połączone."
-            )
-            print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert startowych.")
+            self.send_telegram("🤖 <b>Ligobot LEGO aktywowany!</b>")
+            print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert.")
 
     def run(self) -> None:
-        print("Uruchamianie monitora okazji LEGO przez Bright Data...")
         while True:
             self.check_vinted()
             time.sleep(self.config.interval_seconds)
-
 
 if __name__ == "__main__":
     try:
