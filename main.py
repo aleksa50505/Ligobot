@@ -10,15 +10,11 @@ from typing import Any
 from curl_cffi import requests as cffi_requests
 
 PROXY_URL_ENV = os.environ.get("PROXY_URL", "").strip()
-if PROXY_URL_ENV and "://" not in PROXY_URL_ENV:
-    PROXY_URL_ENV = f"http://{PROXY_URL_ENV}"
 
 DEFAULT_VINTED_URL = (
     "https://www.vinted.pl/api/v2/catalog/items"
     "?search_text=lego&order=newest_first&per_page=96"
 )
-# Zmieniamy adres testowy na lekki endpoint Bright Data, który natychmiast testuje proxy bez blokad Cloudflare
-PROXY_TEST_URL = "https://geo.brdtest.com/myip.json"
 VINTED_HOME_URL = "https://www.vinted.pl/"
 SEEN_FILE = "seen_ids.txt"
 
@@ -168,25 +164,16 @@ class LegoDealMonitor:
                 self._init_session()
                 return
             except Exception as e:
-                print(f"[OSTRZEŻENIE] Problem z proxy/siecią: {e}. Ponawiam próbę za 15 sekund...")
+                print(f"[OSTRZEŻENIE] Problem z sesją: {e}. Ponawiam próbę za 15 sekund...")
                 time.sleep(15)
 
     def _init_session(self) -> None:
-        print("Inicjalizacja sesji przez Bright Data Proxy...")
-        
-        proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
-
-        # Używamy stabilnego impersonate i zwiększamy odporność na timeouty sieciowe chmury
-        session = cffi_requests.Session(impersonate="chrome110", proxies=proxies)
+        print("Inicjalizacja sesji emulowanej...")
+        # Używamy standardowej sesji curl_cffi BEZ bezpośredniego proxy w zmiennej proxies, 
+        # co eliminuje błąd Connection timed out na Renderze.
+        session = cffi_requests.Session(impersonate="chrome110")
         
         try:
-            # Najpierw testujemy połączenie z lekkim endpointem proxy, aby upewnić się, że tunel żyje
-            test_resp = session.get(PROXY_TEST_URL, timeout=15)
-            if test_resp.status_code == 407:
-                raise RuntimeError("Błąd 407: Proxy odrzuciło uwierzytelnianie.")
-            print("Test proxy OK. Pobieram token Vinted...")
-
-            # Pobieramy stronę główną Vinted w celu uzyskania ciasteczek i tokena
             resp = session.get(
                 VINTED_HOME_URL,
                 headers={
@@ -194,30 +181,20 @@ class LegoDealMonitor:
                     "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
                 },
-                timeout=25,
+                timeout=15,
             )
         except Exception as exc:
-            raise RuntimeError(f"Błąd sieci przy połączeniu przez proxy: {exc}") from exc
-
-        if resp.status_code == 407:
-            raise RuntimeError("Błąd 407: Serwer proxy odrzucił autoryzację.")
+            raise RuntimeError(f"Błąd zapytania domowego: {exc}") from exc
 
         if resp.status_code == 200:
             cookies = dict(session.cookies)
             token = cookies.get("access_token_web", "")
-            if token:
-                self._session = session
-                self._bearer_token = token
-                print(f"Sesja gotowa — pobrano token ({len(token)} znaków).")
-                return
-            else:
-                # Jeśli Vinted nie zwróciło ciasteczka z tokenem bezpośrednio, wymuszamy działanie z pustym tokenem (API i tak odpocząć może na publicznych nagłówkach)
-                self._session = session
-                self._bearer_token = ""
-                print("Sesja zainicjalizowana (brak bezpośredniego tokena webowego, kontynuuję).")
-                return
+            self._session = session
+            self._bearer_token = token
+            print(f"Sesja lokalna gotowa — token: {len(token)} znaków.")
+            return
 
-        raise RuntimeError(f"Nie udało się zainicjalizować sesji Vinted. Status: {resp.status_code}")
+        raise RuntimeError(f"Vinted odrzuciło połączenie domowe. Status: {resp.status_code}")
 
     def _api_headers(self) -> dict[str, str]:
         headers = {
@@ -261,7 +238,7 @@ class LegoDealMonitor:
                 resp = self._session.get(
                     self.config.vinted_url,
                     headers=self._api_headers(),
-                    timeout=20,
+                    timeout=15,
                 )
             except Exception as exc:
                 raise RuntimeError(f"Network error: {exc}") from exc
@@ -271,12 +248,12 @@ class LegoDealMonitor:
                 items = data.get("items", [])
                 return [i for i in items if isinstance(i, dict)]
 
-            if resp.status_code in (401, 403, 407) and attempt == 0:
+            if resp.status_code in (401, 403, 407, 429) and attempt == 0:
                 self._refresh_session()
                 continue
 
             raise RuntimeError(f"Vinted API zwróciło HTTP {resp.status_code}")
-        raise RuntimeError("Vinted API zwróciło błąd autoryzacji.")
+        raise RuntimeError("Vinted API odmówiło dostępu.")
 
     @staticmethod
     def price_in_pln(item: dict[str, Any]) -> tuple[float, float, str]:
@@ -343,7 +320,7 @@ class LegoDealMonitor:
                 continue
 
             title = str(item.get("title", "")).strip()
-            description = str(item.get("description", "")).strip()
+            description = str(item.get(description", "")).strip() if "description" in item else ""
             price_pln, raw_price, currency = self.price_in_pln(item)
 
             if price_pln > self.config.max_price_pln or not self.matches(title, description):
