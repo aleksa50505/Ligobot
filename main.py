@@ -110,6 +110,9 @@ class LegoDealMonitor:
         self.config = config
         self.seen_ids: set[str] = self._load_seen_ids()
         self.telegram_error_reported = False
+        
+        # Wysłanie powiadomienia o starcie od razu przy inicjalizacji obiektu
+        self.send_telegram("🤖 <b>Ligobot LEGO aktywowany i gotowy do pracy!</b>")
 
     def _load_seen_ids(self) -> set[str]:
         seen = set()
@@ -136,6 +139,8 @@ class LegoDealMonitor:
             pass
 
     def send_telegram(self, text: str) -> None:
+        if not self.config.telegram_bot_token or not self.config.telegram_chat_id:
+            return
         payload = urllib.parse.urlencode({
             "chat_id": self.config.telegram_chat_id,
             "text": text,
@@ -243,7 +248,6 @@ class LegoDealMonitor:
             print(f"✅ Alert wysłany: {title}")
 
         if is_first_run:
-            self.send_telegram("🤖 <b>Ligobot LEGO aktywowany i gotowy do pracy!</b>")
             print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert.")
 
     def run(self) -> None:
