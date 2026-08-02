@@ -1,13 +1,24 @@
 import os
 import time
 import html
-import json
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+import requests
+
+# Konfiguracja adresu proxy z wymuszeniem portu 443 dla kompatybilności z Renderem
+raw_proxy = os.environ.get("PROXY_URL", "").strip()
+if raw_proxy:
+    if "://" not in raw_proxy:
+        raw_proxy = f"http://{raw_proxy}"
+    parsed_url = urllib.parse.urlparse(raw_proxy)
+    netloc = f"{parsed_url.username}:{parsed_url.password}@{parsed_url.hostname}:443" if parsed_url.username else f"{parsed_url.hostname}:443"
+    PROXY_URL_ENV = f"http://{netloc}"
+else:
+    PROXY_URL_ENV = ""
 
 DEFAULT_VINTED_URL = (
     "https://www.vinted.pl/api/v2/catalog/items"
@@ -108,6 +119,7 @@ class Config:
     vinted_url: str = DEFAULT_VINTED_URL
     max_price_pln: float = 120.0
     interval_seconds: int = 120
+    proxy_url: str = PROXY_URL_ENV
 
     @classmethod
     def from_environment(cls) -> Config:
@@ -117,6 +129,7 @@ class Config:
             vinted_url=DEFAULT_VINTED_URL,
             max_price_pln=float(os.environ.get("MAX_CENA_PLN", "120")),
             interval_seconds=int(os.environ.get("CHECK_INTERVAL_SECONDS", "120")),
+            proxy_url=PROXY_URL_ENV,
         )
 
 
@@ -126,8 +139,9 @@ class LegoDealMonitor:
         self.seen_ids: set[str] = self._load_seen_ids()
         self.telegram_error_reported = False
         self.last_vinted_error: str | None = None
-        self._cookie_jar: str = ""
-        self._init_session()
+        self._session: requests.Session | None = None
+        self._bearer_token: str = ""
+        self._init_session_with_retry()
 
     def _load_seen_ids(self) -> set[str]:
         seen = set()
@@ -153,24 +167,57 @@ class LegoDealMonitor:
         except Exception:
             pass
 
+    def _init_session_with_retry(self) -> None:
+        while True:
+            try:
+                self._init_session()
+                return
+            except Exception as e:
+                print(f"[OSTRZEŻENIE] Problem z sesją requests: {e}. Ponawiam próbę za 15 sekund...")
+                time.sleep(15)
+
     def _init_session(self) -> None:
-        print("Pobieranie początkowej sesji Vinted...")
-        req = urllib.request.Request(
-            VINTED_HOME_URL,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
+        print(f"Inicjalizacja sesji requests przez Proxy...")
+        session = requests.Session()
+        if self.config.proxy_url:
+            session.proxies = {
+                "http": self.config.proxy_url,
+                "https": self.config.proxy_url
             }
-        )
+        
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
+        })
+
         try:
-            with urllib.request.urlopen(req, timeout=15) as response:
-                cookies = response.headers.get_all('Set-Cookie')
-                if cookies:
-                    self._cookie_jar = "; ".join([c.split(';')[0] for c in cookies])
-                print("Sesja Vinted zainicjalizowana pomyślnie.")
-        except Exception as e:
-            print(f"[OSTRZEŻENIE] Nie udało się pobrać głównej strony (może wystąpić ograniczenie IP): {e}")
+            resp = session.get(VINTED_HOME_URL, timeout=20)
+        except Exception as exc:
+            raise RuntimeError(f"Błąd połączenia przez requests: {exc}") from exc
+
+        if resp.status_code == 200:
+            token = session.cookies.get("access_token_web", "")
+            self._session = session
+            self._bearer_token = token
+            print(f"Sesja requests gotowa — token: {len(token)} znaków.")
+            return
+
+        raise RuntimeError(f"Vinted odrzuciło sesję. Status: {resp.status_code}")
+
+    def _api_headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": VINTED_HOME_URL,
+            "Origin": "https://www.vinted.pl",
+        }
+        if self._bearer_token:
+            headers["Authorization"] = f"Bearer {self._bearer_token}"
+        return headers
+
+    def _refresh_session(self) -> None:
+        self._init_session_with_retry()
 
     def send_telegram(self, text: str) -> None:
         payload = urllib.parse.urlencode({
@@ -194,25 +241,28 @@ class LegoDealMonitor:
                 self.telegram_error_reported = True
 
     def fetch_items(self) -> list[dict[str, Any]]:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": VINTED_HOME_URL,
-            "X-Requested-With": "XMLHttpRequest"
-        }
-        if self._cookie_jar:
-            headers["Cookie"] = self._cookie_jar
+        assert self._session is not None
+        for attempt in range(2):
+            try:
+                resp = self._session.get(
+                    self.config.vinted_url,
+                    headers=self._api_headers(),
+                    timeout=20,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Network error: {exc}") from exc
 
-        req = urllib.request.Request(self.config.vinted_url, headers=headers)
-        
-        try:
-            with urllib.request.urlopen(req, timeout=15) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            if resp.status_code == 200:
+                data = resp.json()
                 items = data.get("items", [])
                 return [i for i in items if isinstance(i, dict)]
-        except Exception as exc:
-            raise RuntimeError(f"Błąd pobierania ofert z Vinted: {exc}") from exc
+
+            if resp.status_code in (401, 403, 407, 429) and attempt == 0:
+                self._refresh_session()
+                continue
+
+            raise RuntimeError(f"Vinted API zwróciło HTTP {resp.status_code}")
+        raise RuntimeError("Vinted API odmówiło dostępu.")
 
     @staticmethod
     def price_in_pln(item: dict[str, Any]) -> tuple[float, float, str]:
