@@ -94,13 +94,21 @@ server_thread.start()
 class Config:
     telegram_bot_token: str
     telegram_chat_id: str
+    proxy_url: str
     interval_seconds: int = 120
 
     @classmethod
     def from_environment(cls) -> Config:
+        # Pobieranie proxy ze zmiennych środowiskowych Render (obsługa PROXY_URL, HTTP_PROXY lub HTTPS_PROXY)
+        proxy = (
+            os.environ.get("PROXY_URL", "").strip() or
+            os.environ.get("HTTP_PROXY", "").strip() or
+            os.environ.get("HTTPS_PROXY", "").strip()
+        )
         return cls(
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
+            proxy_url=proxy,
             interval_seconds=int(os.environ.get("CHECK_INTERVAL_SECONDS", "120")),
         )
 
@@ -111,8 +119,18 @@ class LegoDealMonitor:
         self.seen_ids: set[str] = self._load_seen_ids()
         self.telegram_error_reported = False
         
-        # Wysłanie powiadomienia o starcie od razu przy inicjalizacji obiektu
-        self.send_telegram("🤖 <b>Ligobot LEGO aktywowany i gotowy do pracy!</b>")
+        # Konfiguracja sesji requests z rotacyjnymi proxy rezydencjalnymi
+        self.session = requests.Session()
+        if self.config.proxy_url:
+            self.session.proxies = {
+                "http": self.config.proxy_url,
+                "https": self.config.proxy_url,
+            }
+            print("🌐 Włączono obsługę rotacyjnych proxy rezydencjalnych.")
+        else:
+            print("⚠️ OSTRZEŻENIE: Brak skonfigurowanego PROXY w zmiennych środowiskowych!")
+
+        self.send_telegram("🤖 <b>Ligobot LEGO aktywowany i gotowy do pracy (z proxy)!</b>")
 
     def _load_seen_ids(self) -> set[str]:
         seen = set()
@@ -169,9 +187,13 @@ class LegoDealMonitor:
         }
         
         try:
-            response = requests.get(VINTED_CATALOG_URL, headers=headers, timeout=20)
+            # Użycie sesji przechodzącej przez rotacyjne proxy rezydencjalne
+            self.session.get(VINTED_HOME_URL, headers=headers, timeout=20)
+            time.sleep(1)
+            response = self.session.get(VINTED_CATALOG_URL, headers=headers, timeout=25)
+            
             if response.status_code != 200:
-                print(f"Błąd HTTP Vinted: {response.status_code}")
+                print(f"Błąd HTTP Vinted (przez proxy): {response.status_code}")
                 return []
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -203,7 +225,7 @@ class LegoDealMonitor:
             
             return parsed_items
         except Exception as exc:
-            print(f"Błąd parsowania katalogu: {exc}")
+            print(f"Błąd parsowania katalogu przez proxy: {exc}")
             return []
 
     @staticmethod
@@ -215,6 +237,7 @@ class LegoDealMonitor:
         return False
 
     def check_vinted(self) -> None:
+        print("🔍 Sprawdzam najnowsze oferty na Vinted (z użyciem proxy)...")
         items = self.fetch_catalog_items()
         if not items:
             return
