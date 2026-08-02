@@ -8,6 +8,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 import requests
+from bs4").find_all
 from bs4 import BeautifulSoup
 
 VINTED_CATALOG_URL = "https://www.vinted.pl/catalog?search_text=lego&order=newest_first"
@@ -73,15 +74,6 @@ FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
     ("sets", "lego"),
 )
 
-KURSY_WALUT: dict[str, float] = {
-    "PLN": 1.0,
-    "EUR": 4.35,
-    "CZK": 0.17,
-    "HUF": 0.011,
-    "SEK": 0.38,
-    "RON": 0.87,
-}
-
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -103,7 +95,6 @@ server_thread.start()
 class Config:
     telegram_bot_token: str
     telegram_chat_id: str
-    max_price_pln: float = 120.0
     interval_seconds: int = 120
 
     @classmethod
@@ -111,7 +102,6 @@ class Config:
         return cls(
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
-            max_price_pln=float(os.environ.get("MAX_CENA_PLN", "120")),
             interval_seconds=int(os.environ.get("CHECK_INTERVAL_SECONDS", "120")),
         )
 
@@ -204,8 +194,6 @@ class LegoDealMonitor:
                     parsed_items.append({
                         "id": item_id,
                         "title": title,
-                        "description": "",
-                        "price": {"amount": "10.0", "currency_code": "PLN"},
                         "url": clean_url
                     })
             
@@ -215,8 +203,8 @@ class LegoDealMonitor:
             return []
 
     @staticmethod
-    def matches(title: str, description: str) -> bool:
-        full_text = f"{title} {description}".casefold()
+    def matches(title: str) -> bool:
+        full_text = title.casefold()
         for group in FRAZY_GRUPY:
             if all(word.casefold() in full_text for word in group):
                 return True
@@ -241,9 +229,8 @@ class LegoDealMonitor:
                 continue
 
             title = str(item.get("title", "")).strip()
-            description = str(item.get("description", "")).strip()
             
-            if not self.matches(title, description):
+            if not self.matches(title):
                 continue
 
             url = str(item.get("url", VINTED_HOME_URL))
@@ -257,7 +244,7 @@ class LegoDealMonitor:
             print(f"✅ Alert wysłany: {title}")
 
         if is_first_run:
-            self.send_telegram("🤖 <b>Ligobot LEGO aktywowany (tryb stabilny HTML)!</b>")
+            self.send_telegram("🤖 <b>Ligobot LEGO aktywowany i gotowy do pracy!</b>")
             print(f"Inicjalizacja zakończona. Zindeksowano {len(self.seen_ids)} ofert.")
 
     def run(self) -> None:
