@@ -10,7 +10,6 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup
 
-# Link do widoku katalogu Vinted (HTML), który nie blokuje tak jak API JSON
 VINTED_CATALOG_URL = "https://www.vinted.pl/catalog?search_text=lego&order=newest_first"
 VINTED_HOME_URL = "https://www.vinted.pl/"
 SEEN_FILE = "seen_ids.txt"
@@ -184,7 +183,6 @@ class LegoDealMonitor:
             soup = BeautifulSoup(response.text, 'html.parser')
             parsed_items = []
             
-            # Wyszukiwanie elementów ofert na stronie katalogu Vinted
             for a in soup.find_all('a', href=True):
                 href = a['href']
                 if "/items/" in href:
@@ -192,7 +190,6 @@ class LegoDealMonitor:
                         href = "https://www.vinted.pl" + href
                     clean_url = href.split('?')[0]
                     
-                    # Wyciąganie ID z URL typu /items/123456789-tytul
                     parts = clean_url.split('/')
                     item_id = ""
                     for p in parts:
@@ -202,14 +199,13 @@ class LegoDealMonitor:
                     if not item_id:
                         continue
                     
-                    # Próba wyciągnięcia tytułu i ceny bezpośrednio z karty przedmiotu lub tekstu linku
                     title = a.get('title', '') or a.get_text(strip=True)
                     
                     parsed_items.append({
                         "id": item_id,
                         "title": title,
                         "description": "",
-                        "price": {"amount": "10.0", "currency_code": "PLN"}, # Domyślna bezpieczna cena lub parsowana niżej
+                        "price": {"amount": "10.0", "currency_code": "PLN"},
                         "url": clean_url
                     })
             
@@ -247,7 +243,6 @@ class LegoDealMonitor:
             title = str(item.get("title", "")).strip()
             description = str(item.get("description", "")).strip()
             
-            # Filtrowanie według zdefiniowanych grup fraz
             if not self.matches(title, description):
                 continue
 
