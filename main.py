@@ -8,7 +8,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 import requests
-from bs4").find_all
 from bs4 import BeautifulSoup
 
 VINTED_CATALOG_URL = "https://www.vinted.pl/catalog?search_text=lego&order=newest_first"
