@@ -13,7 +13,7 @@ DEFAULT_VINTED_URL = (
     "https://www.vinted.pl/api/v2/catalog/items"
     "?search_text=lego&order=newest_first&per_page=96"
 )
-VINTED_HOME_URL = "https://www.vinted.pl/"
+VINTED_HOME_URL = "https://www.vinted.pl/catalog?search_text=lego"
 SEEN_FILE = "seen_ids.txt"
 
 FRAZY_GRUPY: tuple[tuple[str, ...], ...] = (
@@ -159,18 +159,20 @@ class LegoDealMonitor:
                 self._init_session()
                 return
             except Exception as e:
-                print(f"[OSTRZEŻENIE] Problem z sesją: {e}. Ponawiam próbę za 15 sekund...")
+                print(f"[OSTRZEŻENIE] Inicjalizacja sesji nie powiodła się: {e}. Ponawiam za 15 sekund...")
                 time.sleep(15)
 
     def _init_session(self) -> None:
-        print("Inicjalizacja nowej sesji...")
+        print("Inicjalizacja nowej sesji HTTP z parametrami Web...")
         session = requests.Session()
         
+        # Realistyczne nagłówki nowoczesnej przeglądarki z zachowaniem struktury TLS
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
             "Sec-Fetch-Dest": "document",
@@ -180,15 +182,16 @@ class LegoDealMonitor:
         })
 
         try:
-            resp = session.get(VINTED_HOME_URL, timeout=15)
+            resp = session.get("https://www.vinted.pl/", timeout=15)
+            # Pobieramy ciasteczko sesyjne, które jest kluczowe dla API
             if resp.status_code in (200, 302, 403):
                 self._session = session
-                print("Sesja zainicjalizowana pomyślnie.")
+                print("Sesja nawiązana, ciasteczka zapisane w pamięci podręcznej.")
                 return
         except Exception as exc:
-            raise RuntimeError(f"Błąd połączenia z Vinted: {exc}") from exc
+            raise RuntimeError(f"Błąd sieci przy pobieraniu strony głównej: {exc}") from exc
 
-        raise RuntimeError(f"Vinted zwróciło status: {resp.status_code}")
+        raise RuntimeError(f"Vinted odrzuciło połączenie wstępne, status: {resp.status_code}")
 
     def _refresh_session(self) -> None:
         try:
@@ -220,51 +223,58 @@ class LegoDealMonitor:
     def fetch_items(self) -> list[dict[str, Any]]:
         assert self._session is not None
         
+        # Unikalne nagłówki dla zapytań XHR do katalogu Vinted
         api_headers = {
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://www.vinted.pl/catalog?search_text=lego",
             "Origin": "https://www.vinted.pl",
             "X-Requested-With": "XMLHttpRequest",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
         }
 
         for attempt in range(2):
             try:
+                # Dodajemy losowy parametr buforujący, aby pominąć cache Cloudflare na serwerze pośredniczącym
+                url_with_cache_buster = f"{self.config.vinted_url}&_={int(time.time() * 1000)}"
                 resp = self._session.get(
-                    self.config.vinted_url,
+                    url_with_cache_buster,
                     headers=api_headers,
                     timeout=15,
                 )
             except Exception as exc:
-                raise RuntimeError(f"Network error: {exc}") from exc
+                raise RuntimeError(f"Błąd sieci podczas pobierania ofert: {exc}") from exc
 
             if resp.status_code == 200:
                 try:
-                    # Sprawdzamy czy odpowiedź to faktycznie JSON, a nie HTML Cloudflare
-                    content_type = resp.headers.get("Content-Type", "")
-                    if "application/json" not in content_type and not resp.text.strip().startswith("{"):
-                        raise ValueError("Otrzymano odpowiedź nienależącą do JSON (HTML/Blokada)")
+                    # Sprawdzamy czy fizycznie otrzymaliśmy JSON, a nie stronę HTML blokady
+                    if not resp.text.strip().startswith("{"):
+                        raise ValueError("Otrzymano odpowiedź HTML zamiast obiektu JSON")
                     
                     data = resp.json()
                     if not isinstance(data, dict):
-                        raise ValueError("Format JSON nie jest słownikiem")
+                        raise ValueError("Struktura JSON nie jest słownikiem")
+                    
                     items = data.get("items", [])
                     return [i for i in items if isinstance(i, dict)]
                 except Exception as json_err:
                     if attempt == 0:
-                        print("Ostrzeżenie: Format JSON nieprawidłowy, odświeżam sesję i próbuję ponownie...")
+                        print("Wykryto niezgodność formatu danych, odświeżam tokeny sesyjne...")
                         self._refresh_session()
                         continue
-                    raise RuntimeError("Vinted odrzuciło zapytanie API (zwrócono HTML/Brak danych).") from json_err
+                    raise RuntimeError(f"Vinted zwróciło blokadę HTML w odpowiedzi na API: {json_err}") from json_err
 
             if resp.status_code in (401, 403, 429) and attempt == 0:
-                print(f"Ostrzeżenie: Status {resp.status_code}, odświeżam sesję...")
+                print(f"Ostrzeżenie o statusie blokady {resp.status_code}, ponawiam sesję...")
                 self._refresh_session()
                 continue
 
-            raise RuntimeError(f"Vinted API zwróciło HTTP {resp.status_code}")
-        raise RuntimeError("Vinted API odmówiło dostępu.")
+            raise RuntimeError(f"Vinted API zwróciło niedozwolony status HTTP: {resp.status_code}")
+        
+        raise RuntimeError("Vinted API odrzuciło wszystkie żądania.")
 
     @staticmethod
     def price_in_pln(item: dict[str, Any]) -> tuple[float, float, str]:
