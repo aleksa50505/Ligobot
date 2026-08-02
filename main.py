@@ -163,20 +163,16 @@ class LegoDealMonitor:
                 time.sleep(15)
 
     def _init_session(self) -> None:
-        print("Inicjalizacja nowej sesji przeglądarkowej...")
+        print("Inicjalizacja nowej sesji...")
         session = requests.Session()
         
-        # Pełne nagłówki udające realną przeglądarkę Chrome na Windows
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Ch-Ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
@@ -184,16 +180,15 @@ class LegoDealMonitor:
         })
 
         try:
-            # Najpierw wchodzimy na stronę główną, aby pobrać wymagane ciasteczka sesyjne
             resp = session.get(VINTED_HOME_URL, timeout=15)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 302, 403):
                 self._session = session
-                print("Sesja zainicjalizowana pomyślnie, ciasteczka pobrane.")
+                print("Sesja zainicjalizowana pomyślnie.")
                 return
         except Exception as exc:
             raise RuntimeError(f"Błąd połączenia z Vinted: {exc}") from exc
 
-        raise RuntimeError(f"Vinted zwróciło status blokady: {resp.status_code}")
+        raise RuntimeError(f"Vinted zwróciło status: {resp.status_code}")
 
     def _refresh_session(self) -> None:
         try:
@@ -228,9 +223,10 @@ class LegoDealMonitor:
         api_headers = {
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://www.vinted.pl/",
+            "Referer": "https://www.vinted.pl/catalog?search_text=lego",
+            "Origin": "https://www.vinted.pl",
             "X-Requested-With": "XMLHttpRequest",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         }
 
         for attempt in range(2):
@@ -245,11 +241,22 @@ class LegoDealMonitor:
 
             if resp.status_code == 200:
                 try:
+                    # Sprawdzamy czy odpowiedź to faktycznie JSON, a nie HTML Cloudflare
+                    content_type = resp.headers.get("Content-Type", "")
+                    if "application/json" not in content_type and not resp.text.strip().startswith("{"):
+                        raise ValueError("Otrzymano odpowiedź nienależącą do JSON (HTML/Blokada)")
+                    
                     data = resp.json()
+                    if not isinstance(data, dict):
+                        raise ValueError("Format JSON nie jest słownikiem")
                     items = data.get("items", [])
                     return [i for i in items if isinstance(i, dict)]
-                except Exception:
-                    raise RuntimeError("Otrzymano nieprawidłowy format JSON z Vinted.")
+                except Exception as json_err:
+                    if attempt == 0:
+                        print("Ostrzeżenie: Format JSON nieprawidłowy, odświeżam sesję i próbuję ponownie...")
+                        self._refresh_session()
+                        continue
+                    raise RuntimeError("Vinted odrzuciło zapytanie API (zwrócono HTML/Brak danych).") from json_err
 
             if resp.status_code in (401, 403, 429) and attempt == 0:
                 print(f"Ostrzeżenie: Status {resp.status_code}, odświeżam sesję...")
