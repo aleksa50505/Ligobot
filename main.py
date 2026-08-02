@@ -169,9 +169,8 @@ class LegoDealMonitor:
 
     def _init_session(self) -> None:
         print("Inicjalizacja sesji emulowanej...")
-        # Używamy standardowej sesji curl_cffi BEZ bezpośredniego proxy w zmiennej proxies, 
-        # co eliminuje błąd Connection timed out na Renderze.
-        session = cffi_requests.Session(impersonate="chrome110")
+        proxies = {"http": self.config.proxy_url, "https": self.config.proxy_url} if self.config.proxy_url else None
+        session = cffi_requests.Session(impersonate="chrome110", proxies=proxies)
         
         try:
             resp = session.get(
@@ -320,7 +319,7 @@ class LegoDealMonitor:
                 continue
 
             title = str(item.get("title", "")).strip()
-            description = str(item.get(description", "")).strip() if "description" in item else ""
+            description = str(item.get("description", "")).strip() if "description" in item else ""
             price_pln, raw_price, currency = self.price_in_pln(item)
 
             if price_pln > self.config.max_price_pln or not self.matches(title, description):
