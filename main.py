@@ -78,6 +78,7 @@ def vinted_bot_loop():
         try:
             print(f"Sprawdzam Vinted: {VINTED_SEARCH_URL}")
             response = session.get(VINTED_SEARCH_URL, headers=headers, timeout=30)
+            print(f"Otrzymano status HTTP od Vinted: {response.status_code}")
             
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -110,8 +111,8 @@ def vinted_bot_loop():
         except Exception as e:
             print(f"Błąd podczas pobierania Vinted: {e}")
 
-        # Czekaj 3 minuty
-        time.sleep(180)
+        # Czekaj 30 sekund zamiast 3 minut
+        time.sleep(30)
 
 if __name__ == "__main__":
     vinted_bot_loop()
