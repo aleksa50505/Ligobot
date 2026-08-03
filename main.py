@@ -5,15 +5,25 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 from bs4 import BeautifulSoup
 
-# Konfiguracja Telegrama
-TELEGRAM_BOT_TOKEN = "TUTAJ_WPISZ_SWOJ_TOKEN"
-TELEGRAM_CHAT_ID = "TUTAJ_WPISZ_SWOJE_CHAT_ID"
+# Pobieranie konfiguracji ze zmiennych środowiskowych Render
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+# Konfiguracja proxy Bright Data ze zmiennych środowiskowych Render
+PROXY_URL = (
+    os.environ.get("PROXY_URL", "").strip() or
+    os.environ.get("HTTP_PROXY", "").strip() or
+    os.environ.get("HTTPS_PROXY", "").strip()
+)
 
 # Link do wyszukiwania na Vinted
 VINTED_SEARCH_URL = "https://www.vinted.pl/catalog?search_text=lego"
 
 def send_telegram_message(message):
     try:
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            print("Błąd: Brak skonfigurowanego TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID w Render!")
+            return
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
@@ -53,10 +63,19 @@ def vinted_bot_loop():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
+    # Konfiguracja sesji z proxy Bright Data
+    session = requests.Session()
+    if PROXY_URL:
+        session.proxies = {
+            "http": PROXY_URL,
+            "https": PROXY_URL,
+        }
+        print("Włączono obsługę proxy rezydencjalnego.")
+
     while True:
         try:
             print(f"Sprawdzam Vinted: {VINTED_SEARCH_URL}")
-            response = requests.get(VINTED_SEARCH_URL, headers=headers, timeout=30)
+            response = session.get(VINTED_SEARCH_URL, headers=headers, timeout=30)
             
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
